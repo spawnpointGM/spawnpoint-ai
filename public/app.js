@@ -24,6 +24,17 @@ const myGames = {
   remove(slug) { store.set('sp:mine', this.all().filter((g) => g.slug !== slug)); },
 };
 
+function keyHeaders(slug) {
+  const h = {};
+  const mine = myGames.find(slug);
+  if (mine) h['x-edit-key'] = mine.editKey;
+  const admin = store.get('sp:admin', null);
+  if (admin) h['x-admin-key'] = admin;
+  return h;
+}
+
+const STATUS_LABEL = { live: 'Live', pending: 'Waiting for review', rejected: 'Not approved', hidden: 'Hidden', draft: 'Upload not finished' };
+
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]); }
 
 function html(strings, ...vals) {
@@ -88,6 +99,7 @@ const routes = [
   [/^\/publish\/?$/, viewPublish],
   [/^\/manage\/([^/]+)\/?$/, (m) => viewManage(decodeURIComponent(m[1]))],
   [/^\/mine\/?$/, viewMine],
+  [/^\/admin\/?$/, viewAdmin],
 ];
 
 let cleanup = null;
@@ -234,7 +246,7 @@ function card(g) {
 async function viewGame(slug) {
   main.innerHTML = '<p class="loading">Loading game…</p>';
   let data;
-  try { data = await api('/games/' + encodeURIComponent(slug)); }
+  try { data = await api('/games/' + encodeURIComponent(slug), { headers: keyHeaders(slug) }); }
   catch (err) {
     main.innerHTML = html`<div class="wrap"><div class="empty" style="margin-top:40px"><h2>Game not found</h2><p>${err.message}</p><a class="btn btn-primary" href="/" data-link>Browse games</a></div></div>`;
     return;
@@ -246,14 +258,18 @@ async function viewGame(slug) {
   const aiParts = [g.ai.code && 'code', g.ai.art && 'art', g.ai.audio && 'audio', g.ai.text && 'writing'].filter(Boolean);
   const isLink = g.kind === 'link';
   const r = rating(g);
+  const live = g.status === 'live';
+  const adminView = g.review?.role === 'admin';
+  let playUrl = g.playUrl || g.review?.previewUrl || null;
 
   main.innerHTML = html`
+    ${raw(g.review ? `<div class="wrap">${reviewBanner(g, adminView)}</div>` : '')}
     <div class="wrap game-layout">
         <div class="stage-wrap">
           <div class="stage" id="stage">
             <div class="poster" id="poster">
               ${raw(art(g))}
-              ${raw(g.playUrl ? `<button class="btn btn-play" id="play" type="button">${ICON.play} Play</button>` : '<p style="color:#fff;position:relative">This game has no playable build yet.</p>')}
+              ${raw(playUrl ? `<button class="btn btn-play" id="play" type="button">${ICON.play} Play</button>` : '<p style="color:#fff;position:relative">This game has no playable build yet.</p>')}
               ${raw(g.controls ? `<p class="poster-note">${esc(g.controls)}</p>` : '')}
             </div>
           </div>
@@ -264,7 +280,7 @@ async function viewGame(slug) {
               ${raw(isLink ? `<a class="btn btn-ghost" href="${esc(g.externalUrl)}" target="_blank" rel="noopener">${ICON.ext} Open on its site</a>` : '')}
             </div>
             <div class="right">
-              <button class="btn btn-ghost" type="button" id="report">${raw(ICON.flag)} Report</button>
+              ${raw(live ? `<button class="btn btn-ghost" type="button" id="report">${ICON.flag} Report</button>` : '')}
             </div>
           </div>
         </div>
@@ -276,11 +292,11 @@ async function viewGame(slug) {
         <h1>${g.title}</h1>
         <p class="by">by ${g.creator}</p>
         ${raw(g.tagline ? html`<p class="pitch">${g.tagline}</p>` : '')}
-        <div class="votes">
+        ${raw(live ? html`<div class="votes">
           <button class="vote up" type="button" data-v="1" aria-pressed="${myVote === 1}" aria-label="I liked it">${raw(ICON.up)} <span>${g.up}</span></button>
           <button class="vote down" type="button" data-v="-1" aria-pressed="${myVote === -1}" aria-label="Not for me">${raw(ICON.down)} <span>${g.down}</span></button>
         </div>
-        <p class="score" id="score">${likedText(g.up, g.down)}</p>
+        <p class="score" id="score">${likedText(g.up, g.down)}</p>` : '')}
         <dl class="facts">
           <dt>Genre</dt><dd>${g.genre}</dd>
           <dt>Plays</dt><dd>${fmtCount(g.plays)}</dd>
@@ -318,7 +334,7 @@ async function viewGame(slug) {
   let frame = null;
 
   function start() {
-    if (!g.playUrl) return;
+    if (!playUrl) return;
     frame?.remove();
     frame = document.createElement('iframe');
     frame.title = g.title;
@@ -330,12 +346,12 @@ async function viewGame(slug) {
       // Saved data travels in via the frame's name; the game sends updates back with postMessage.
       frame.name = '__sp:' + JSON.stringify(store.get(saveKey, {}));
     }
-    frame.src = g.playUrl;
+    frame.src = playUrl;
     $('#poster')?.remove();
     stage.appendChild(frame);
     frame.focus();
     frame.addEventListener('load', () => frame.focus());
-    const counted = sessionStorage.getItem('sp:played:' + g.id);
+    const counted = sessionStorage.getItem('sp:played:' + g.id) || !live;
     if (!counted) { sessionStorage.setItem('sp:played:' + g.id, '1'); api(`/games/${encodeURIComponent(g.slug)}/play`, { method: 'POST' }).catch(() => {}); }
   }
 
@@ -351,6 +367,9 @@ async function viewGame(slug) {
   cleanup = () => window.removeEventListener('message', onMessage);
 
   $('#play')?.addEventListener('click', start);
+  $('#preview-pending')?.addEventListener('click', () => { playUrl = g.review.previewUrl; start(); toast('Playing the version waiting for review'); });
+  main.querySelector('[data-approve]')?.addEventListener('click', async () => { if (await reviewAction(g.slug, 'approve')) render(); });
+  main.querySelector('[data-reject]')?.addEventListener('click', async () => { if (await reviewAction(g.slug, 'reject')) render(); });
   $('#restart').addEventListener('click', () => { if (frame) start(); });
   $('#fs').addEventListener('click', async () => {
     if (!frame) start();
@@ -376,7 +395,7 @@ async function viewGame(slug) {
 
   // --- report ---
   const dlg = $('#report-dlg');
-  $('#report').addEventListener('click', () => dlg.showModal());
+  $('#report')?.addEventListener('click', () => dlg.showModal());
   dlg.addEventListener('close', async () => {
     if (dlg.returnValue !== 'send') return;
     const reason = $('#report-form').reason.value;
@@ -385,6 +404,68 @@ async function viewGame(slug) {
       toast('Report sent. Thanks for flagging it.');
     } catch (err) { toast(err.message); }
   });
+}
+
+// ---------- review status ----------
+
+function reviewBanner(g, adminView) {
+  const r = g.review;
+  if (!r) return '';
+  const waiting = [r.pendingVersion && (g.version ? `version ${r.pendingVersion}` : 'the game'), r.coverPending && 'a new cover', r.pendingUrl && 'a new link'].filter(Boolean);
+  let title, text = '', tone = 'info';
+  if (g.status === 'pending') {
+    title = adminView ? 'New game waiting for your review' : 'Waiting for review';
+    if (!adminView) text = "Only you can see this page until it's approved. Check its status anytime under My games.";
+  } else if (g.status === 'rejected') {
+    tone = 'bad'; title = 'Not approved';
+    text = `${r.note} ${g.kind === 'link' ? 'Edit the game to send it for review again.' : 'Upload a new version from Manage to send it for review again.'}`;
+  } else if (g.status === 'hidden') {
+    tone = 'bad'; title = 'Hidden by the site owner'; text = "Players can't see this game right now.";
+  } else if (waiting.length) {
+    title = adminView ? `Update waiting for your review: ${waiting.join(', ')}` : 'Your update is waiting for review';
+    if (!adminView) text = `Players see the approved version until ${waiting.join(' and ')} is approved.`;
+  } else if (r.note && !adminView) {
+    tone = 'bad'; title = 'Your last update was not approved'; text = r.note;
+  } else return '';
+  const flags = adminView ? (r.flags.length ? `<ul class="flags">${r.flags.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>` : '<p>Automatic checks found nothing.</p>') : '';
+  const preview = g.status === 'live' && r.pendingVersion ? '<button class="btn btn-sm" type="button" id="preview-pending">Play the waiting version</button>' : '';
+  const actions = adminView && (g.status === 'pending' || waiting.length)
+    ? '<button class="btn btn-primary btn-sm" type="button" data-approve>Approve</button><button class="btn btn-sm btn-danger" type="button" data-reject>Reject</button>' : '';
+  return `<div class="banner banner-${tone}"><div class="grow"><strong>${esc(title)}</strong>${text ? `<p>${esc(text)}</p>` : ''}${flags}</div>${preview || actions ? `<div class="banner-actions">${preview}${actions}</div>` : ''}</div>`;
+}
+
+function askRejectReason() {
+  return new Promise((resolve) => {
+    const dlg = document.createElement('dialog');
+    const reasons = ['Adult or sexual content', "It doesn't load or work", "It copies someone else's work", 'Spam or a duplicate', 'Other'];
+    dlg.innerHTML = `<form method="dialog"><h2>Reject this submission</h2><p class="hint" style="margin-bottom:12px">The creator sees the reason on their game page.</p>
+      <div class="checks">${reasons.map((r, i) => `<label class="check"><input type="radio" name="r" value="${esc(r)}" ${i === 0 ? 'checked' : ''}> ${esc(r)}</label>`).join('')}</div>
+      <div class="field"><label for="rj-more">Note to the creator <span class="hint">(optional)</span></label><textarea id="rj-more" maxlength="400" style="min-height:70px"></textarea></div>
+      <div class="actions" style="margin-top:8px"><button class="btn btn-danger" value="ok">Reject</button><button class="btn" value="cancel" formnovalidate>Cancel</button></div></form>`;
+    document.body.appendChild(dlg);
+    dlg.addEventListener('close', () => {
+      const ok = dlg.returnValue === 'ok';
+      const reason = dlg.querySelector('input[name=r]:checked').value;
+      const more = dlg.querySelector('#rj-more').value.trim();
+      dlg.remove();
+      resolve(ok ? `Not approved: ${reason}.${more ? ' ' + more : ''}` : null);
+    });
+    dlg.showModal();
+  });
+}
+
+async function reviewAction(slug, action) {
+  let body = {};
+  if (action === 'reject') {
+    const reason = await askRejectReason();
+    if (reason === null) return false;
+    body = { reason };
+  }
+  try {
+    await api(`/admin/games/${encodeURIComponent(slug)}/${action}`, { method: 'POST', body, headers: { 'x-admin-key': store.get('sp:admin', '') } });
+    toast(action === 'approve' ? 'Approved. Players can see it now.' : 'Rejected. The creator will see your reason.');
+    return true;
+  } catch (err) { toast(err.message); return false; }
 }
 
 // ---------- reading game files ----------
@@ -437,7 +518,7 @@ function fileSummary(info) {
     ${info.htmlFiles.length > 1 ? `<div class="field" style="margin-top:10px"><label for="entry">Start file</label><select id="entry">${options}</select></div>` : `Start file: <strong>${esc(info.entry)}</strong>`}</div>`;
 }
 
-async function uploadBuild(slug, editKey, version, info, entry, onProgress) {
+async function uploadBuild(slug, editKey, version, info, entry, onProgress, onStage = () => {}) {
   const paths = Object.keys(info.files);
   let done = 0, i = 0;
   const total = paths.reduce((n, p) => n + info.files[p].byteLength, 0) || 1;
@@ -461,6 +542,16 @@ async function uploadBuild(slug, editKey, version, info, entry, onProgress) {
     }
   }
   await Promise.all(Array.from({ length: Math.min(5, paths.length) }, worker));
+  // Automatic content check on the game's main images (the largest ones the checker can read).
+  const images = paths.filter((p) => /\.(png|jpe?g|webp|gif)$/i.test(p) && info.files[p].byteLength <= 600 * 1024)
+    .sort((a, b) => info.files[b].byteLength - info.files[a].byteLength).slice(0, 4);
+  for (const [n, p] of images.entries()) {
+    onStage(`Checking images: ${n + 1} of ${images.length}`);
+    try {
+      await api(`/games/${encodeURIComponent(slug)}/versions/${version}/scan?path=${encodeURIComponent(p)}`, { method: 'POST', headers: { 'x-edit-key': editKey } });
+    } catch (err) { if (/adult content/i.test(err.message)) throw err; }
+  }
+  onStage('Submitting for review…');
   return api(`/games/${encodeURIComponent(slug)}/versions/${version}/publish`, { method: 'POST', body: { entry }, headers: { 'x-edit-key': editKey } });
 }
 
@@ -525,8 +616,22 @@ function setupCover() {
   return () => input.files[0] || null;
 }
 
+// Shrinks the cover before upload: faster pages, and small enough for the automatic content check.
+async function prepareCover(file) {
+  try {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, 1280 / bmp.width);
+    const c = document.createElement('canvas');
+    c.width = Math.round(bmp.width * scale); c.height = Math.round(bmp.height * scale);
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.85));
+    return blob || file;
+  } catch { return file; }
+}
+
 async function uploadCover(slug, editKey, file) {
-  return api(`/games/${encodeURIComponent(slug)}/cover`, { method: 'PUT', raw: file, headers: { 'x-edit-key': editKey, 'content-type': file.type } });
+  const img = await prepareCover(file);
+  return api(`/games/${encodeURIComponent(slug)}/cover`, { method: 'PUT', raw: img, headers: { 'x-edit-key': editKey, 'content-type': img.type } });
 }
 
 // ---------- publish ----------
@@ -537,7 +642,7 @@ function viewPublish() {
     <div class="wrap">
       <div class="page-head">
         <h1>Publish a game</h1>
-        <p>Upload your game's files or link to where it's already hosted. It goes live as soon as you publish, and you can update it any time.</p>
+        <p>Upload your game's files or link to where it's already hosted. Every game is reviewed before it appears on the site, usually within a day.</p>
       </div>
       <form class="form" id="pub" novalidate>
         <section class="step">
@@ -564,8 +669,8 @@ function viewPublish() {
           ${raw(detailsFields())}
         </section>
         <div class="actions">
-          <button class="btn btn-primary" type="submit" id="submit">Publish game</button>
-          <span class="hint">By publishing you confirm you have the right to share this game.</span>
+          <button class="btn btn-primary" type="submit" id="submit">Submit for review</button>
+          <span class="hint">By submitting you confirm you have the right to share this game. Adult content isn't allowed.</span>
         </div>
         <div id="status"></div>
       </form>
@@ -617,34 +722,38 @@ function viewPublish() {
       }
       const cover = getCover();
       if (cover) { label.textContent = 'Uploading cover…'; await uploadCover(created.slug, created.editKey, cover); }
+      let status = created.status;
       if (kind === 'hosted') {
         const entry = $('#entry')?.value || info.entry;
-        await uploadBuild(created.slug, created.editKey, created.version, info, entry, (frac, done, total) => {
+        const res = await uploadBuild(created.slug, created.editKey, created.version, info, entry, (frac, done, total) => {
           bar.style.width = Math.round(frac * 100) + '%';
           label.textContent = `Uploading files: ${done} of ${total}`;
-        });
+        }, (text) => { label.textContent = text; });
+        status = res.game.status;
       }
       bar.style.width = '100%';
-      showPublished(created, details.title.trim());
+      showPublished(created, details.title.trim(), status);
     } catch (err) {
-      fail(err.message + (created ? ' Your details are saved. Press Publish again to retry.' : ''));
+      const adult = /adult content/i.test(err.message);
+      fail(err.message + (created && !adult ? ' Your details are saved. Press Submit again to retry.' : ''));
     }
   });
 }
 
-function showPublished(created, title) {
+function showPublished(created, title, status) {
   const url = `${location.origin}/game/${encodeURIComponent(created.slug)}`;
+  const live = status === 'live';
   main.innerHTML = html`
     <div class="wrap">
       <div class="done">
-        <h2>${title} is live</h2>
-        <p>Share this link to get people playing:</p>
+        <h2>${live ? `${title} is live` : `${title} is submitted`}</h2>
+        <p>${live ? 'Share this link to get people playing:' : "It's waiting for review, usually within a day. This link starts working for everyone once it's approved, and you can open it now to test your game:"}</p>
         <div class="keybox"><code id="game-url">${url}</code><button class="btn" type="button" data-copy="game-url">Copy</button></div>
         <h3 style="font-size:1.1rem;margin-top:22px">Your edit key</h3>
         <p class="hint">You need this to update or delete the game. It's saved on this device under My games, but copy it somewhere safe too. It can't be recovered.</p>
         <div class="keybox"><code id="edit-key">${created.editKey}</code><button class="btn" type="button" data-copy="edit-key">Copy</button></div>
         <div class="actions">
-          <a class="btn btn-primary" href="/game/${encodeURIComponent(created.slug)}" data-link>Play your game</a>
+          <a class="btn btn-primary" href="/game/${encodeURIComponent(created.slug)}" data-link>${live ? 'Play your game' : 'Open your game page'}</a>
           <a class="btn" href="/manage/${encodeURIComponent(created.slug)}" data-link>Manage it</a>
         </div>
       </div>
@@ -666,40 +775,41 @@ function bindCopy() {
 async function viewManage(slug) {
   document.title = `Manage game | ${META.siteName}`;
   main.innerHTML = '<p class="loading">Loading…</p>';
-  let g;
-  try { g = (await api('/games/' + encodeURIComponent(slug))).game; }
-  catch (err) { main.innerHTML = html`<div class="wrap"><div class="empty" style="margin-top:40px"><h2>Game not found</h2><p>${err.message}</p></div></div>`; return; }
   const saved = myGames.find(slug);
   if (!saved) {
     main.innerHTML = html`
-      <div class="wrap"><div class="page-head"><h1>Manage ${g.title}</h1><p>Enter the edit key you got when you published this game.</p></div>
+      <div class="wrap"><div class="page-head"><h1>Manage your game</h1><p>Enter the edit key you got when you published this game.</p></div>
       <form class="form step" id="keyform"><div class="field"><label for="key">Edit key</label><input id="key" type="text" autocomplete="off" required></div>
       <div class="actions" style="margin-top:0"><button class="btn btn-primary">Continue</button></div><div id="kerr"></div></form></div>`;
     $('#keyform').addEventListener('submit', async (e) => {
       e.preventDefault();
       const key = $('#key').value.trim();
       try {
-        await api('/games/' + encodeURIComponent(slug), { method: 'PATCH', body: {}, headers: { 'x-edit-key': key } });
-        myGames.save({ slug, title: g.title, editKey: key, id: g.id });
+        const { game } = await api('/games/' + encodeURIComponent(slug), { method: 'PATCH', body: {}, headers: { 'x-edit-key': key } });
+        myGames.save({ slug, title: game.title, editKey: key, id: game.id });
         render();
       } catch (err) { $('#kerr').innerHTML = html`<p class="error">${err.message}</p>`; }
     });
     return;
   }
+  let g;
+  try { g = (await api('/games/' + encodeURIComponent(slug), { headers: keyHeaders(slug) })).game; }
+  catch (err) { main.innerHTML = html`<div class="wrap"><div class="empty" style="margin-top:40px"><h2>Game not found</h2><p>${err.message}</p></div></div>`; return; }
   const key = saved.editKey;
   const isLink = g.kind === 'link';
   main.innerHTML = html`
     <div class="wrap">
-      <div class="page-head"><h1>Manage ${g.title}</h1><p><a href="/game/${encodeURIComponent(g.slug)}" data-link>View the game page</a></p></div>
+      <div class="page-head"><h1>Manage ${g.title}</h1><p class="head-meta"><span class="badge badge-${g.status}">${STATUS_LABEL[g.status] || g.status}</span><a href="/game/${encodeURIComponent(g.slug)}" data-link>View the game page</a></p></div>
       <div class="form">
+        ${raw(reviewBanner(g, false))}
         <section class="step">
-          <div class="step-head"><div><h2>${isLink ? 'Game link' : 'Upload a new version'}</h2><p>${isLink ? 'Change where the game is hosted.' : `Players get the new version right away. Current version: ${g.version}.`}</p></div></div>
+          <div class="step-head"><div><h2>${isLink ? 'Game link' : 'Upload a new version'}</h2><p>${isLink ? 'Change where the game is hosted. A new link is reviewed before players see it.' : `Each new version is reviewed before players see it. ${g.version ? `Players currently have version ${g.version}.` : ''}`}</p></div></div>
           ${raw(isLink
             ? html`<div class="field"><label for="ext-url">Game link</label><input id="ext-url" type="url" value="${g.externalUrl}"></div><button class="btn btn-primary" type="button" id="save-link">Save link</button>`
             : `<div class="drop" id="drop" tabindex="0" role="button" aria-label="Choose new game files"><strong>Drop a .zip or .html file here</strong><span>or tap to choose one</span></div>
                <input type="file" id="files" accept=".zip,.html,.htm" hidden><div id="file-info"></div>
                <div class="field" style="margin-top:16px"><label for="notes">What changed? <span class="hint">(shown to players)</span></label><input id="notes" type="text" maxlength="500" placeholder="Fixed the jump, added level 3"></div>
-               <button class="btn btn-primary" type="button" id="ship">Publish new version</button><div id="ship-status"></div>`)}
+               <button class="btn btn-primary" type="button" id="ship">Submit new version</button><div id="ship-status"></div>`)}
         </section>
         <section class="step">
           <div class="step-head"><div><h2>Details</h2></div></div>
@@ -717,6 +827,7 @@ async function viewManage(slug) {
       </div>
     </div>`;
   bindCopy();
+  $('#preview-pending')?.addEventListener('click', () => go('/game/' + encodeURIComponent(slug)));
   const getCover = setupCover();
   const headers = { 'x-edit-key': key };
 
@@ -726,14 +837,18 @@ async function viewManage(slug) {
     try {
       await api('/games/' + encodeURIComponent(slug), { method: 'PATCH', body: readDetails(), headers });
       const cover = getCover();
-      if (cover) await uploadCover(slug, key, cover);
+      const coverRes = cover ? await uploadCover(slug, key, cover) : null;
       myGames.save({ ...saved, title: $('#title').value.trim() });
-      s.textContent = ''; toast('Details saved');
+      s.textContent = ''; toast(coverRes?.pending ? 'Saved. The new cover appears after review.' : 'Details saved');
     } catch (err) { s.className = 'error'; s.textContent = err.message; }
   });
 
   $('#save-link')?.addEventListener('click', async () => {
-    try { await api('/games/' + encodeURIComponent(slug), { method: 'PATCH', body: { externalUrl: $('#ext-url').value.trim() }, headers }); toast('Link saved'); }
+    try {
+      const res = await api('/games/' + encodeURIComponent(slug), { method: 'PATCH', body: { externalUrl: $('#ext-url').value.trim() }, headers });
+      toast(res.game.review?.pendingUrl || res.game.status === 'pending' ? 'Link sent for review' : 'Link saved');
+      render();
+    }
     catch (err) { toast(err.message); }
   });
 
@@ -753,10 +868,14 @@ async function viewManage(slug) {
       try {
         if (!pending) pending = (await api(`/games/${encodeURIComponent(slug)}/versions`, { method: 'POST', body: { notes: $('#notes').value }, headers })).version;
         const entry = $('#entry')?.value || info.entry;
-        const res = await uploadBuild(slug, key, pending, info, entry, (frac, done, total) => { bar.style.width = Math.round(frac * 100) + '%'; label.textContent = `Uploading files: ${done} of ${total}`; });
-        toast(`Version ${res.game.version} is live`);
+        const res = await uploadBuild(slug, key, pending, info, entry, (frac, done, total) => { bar.style.width = Math.round(frac * 100) + '%'; label.textContent = `Uploading files: ${done} of ${total}`; }, (text) => { label.textContent = text; });
+        toast(res.approved ? `Version ${res.game.version} is live` : `Version ${pending} sent for review`);
         render();
-      } catch (err) { st.innerHTML = html`<p class="error">${err.message} Press Publish new version to retry.</p>`; btn.disabled = false; }
+      } catch (err) {
+        const adult = /adult content/i.test(err.message);
+        if (adult) pending = null;
+        st.innerHTML = html`<p class="error">${err.message}${adult ? '' : ' Press Submit new version to retry.'}</p>`; btn.disabled = false;
+      }
     });
   }
 
@@ -778,9 +897,112 @@ function viewMine() {
     <div class="wrap">
       <div class="page-head"><h1>My games</h1><p>Games you've published from this device. To manage a game from another device, open its manage page and enter its edit key.</p></div>
       ${raw(list.length
-        ? `<div class="list">${list.map((g) => `<div class="list-item"><div class="thumb">${genArt(g.title)}</div><div class="grow"><h3>${esc(g.title)}</h3><p>/game/${esc(g.slug)}</p></div><a class="btn btn-sm" href="/game/${encodeURIComponent(g.slug)}" data-link>Play</a><a class="btn btn-sm" href="/manage/${encodeURIComponent(g.slug)}" data-link>Manage</a></div>`).join('')}</div>`
+        ? `<div class="list">${list.map((g) => `<div class="list-item"><div class="thumb">${genArt(g.title)}</div><div class="grow"><h3>${esc(g.title)}</h3><p class="mine-status" data-slug="${esc(g.slug)}">Checking status…</p></div><a class="btn btn-sm" href="/game/${encodeURIComponent(g.slug)}" data-link>Open</a><a class="btn btn-sm" href="/manage/${encodeURIComponent(g.slug)}" data-link>Manage</a></div>`).join('')}</div>`
         : `<div class="empty" style="max-width:760px;margin-top:20px"><h2>You haven't published anything yet</h2><p>Upload a zip or an HTML file and your game gets its own page.</p><a class="btn btn-primary" href="/publish" data-link>Publish a game</a></div>`)}
     </div>`;
+  main.querySelectorAll('.mine-status').forEach(async (el) => {
+    const slug = el.dataset.slug;
+    try {
+      const { game } = await api('/games/' + encodeURIComponent(slug), { headers: keyHeaders(slug) });
+      const waiting = game.review && (game.review.pendingVersion || game.review.coverPending || game.review.pendingUrl);
+      el.innerHTML = `<span class="badge badge-${game.status}">${STATUS_LABEL[game.status] || game.status}</span>${game.status === 'live' && waiting ? ' <span class="badge badge-pending">Update waiting for review</span>' : ''}`;
+    } catch { el.textContent = 'This game was removed.'; }
+  });
+}
+
+// ---------- admin ----------
+
+async function viewAdmin() {
+  document.title = `Admin | ${META.siteName}`;
+  const key = store.get('sp:admin', null);
+  if (!key) {
+    main.innerHTML = html`
+      <div class="wrap"><div class="page-head"><h1>Admin</h1><p>Enter the ADMIN_KEY you set when you deployed the site. It's saved on this device only.</p></div>
+      <form class="form step" id="adminform"><div class="field"><label for="akey">Admin key</label><input id="akey" type="password" autocomplete="current-password" required></div>
+      <div class="actions" style="margin-top:0"><button class="btn btn-primary">Sign in</button></div><div id="aerr"></div></form></div>`;
+    $('#adminform').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const k = $('#akey').value.trim();
+      try { await api('/admin/queue', { headers: { 'x-admin-key': k } }); store.set('sp:admin', k); render(); }
+      catch (err) { $('#aerr').innerHTML = html`<p class="error">${err.message}</p>`; }
+    });
+    return;
+  }
+  main.innerHTML = '<p class="loading">Loading review queue…</p>';
+  const headers = { 'x-admin-key': key };
+  let queue, reports, usage;
+  try {
+    [queue, reports, usage] = await Promise.all([api('/admin/queue', { headers }), api('/admin/reports', { headers }), api('/admin/usage', { headers })]);
+  } catch (err) {
+    if (/admin key/i.test(err.message)) { store.set('sp:admin', null); return render(); }
+    main.innerHTML = html`<div class="wrap"><div class="empty" style="margin-top:40px"><h2>Admin tools didn't load</h2><p>${err.message}</p></div></div>`;
+    return;
+  }
+  const kindOf = (g) => {
+    if (g.status === 'pending') return 'New game';
+    const r = g.review;
+    return [r.pendingVersion && `Update to version ${r.pendingVersion}`, r.coverPending && 'New cover', r.pendingUrl && 'New link'].filter(Boolean).join(', ');
+  };
+  const aiText = (g) => {
+    const parts = [g.ai.code && 'code', g.ai.art && 'art', g.ai.audio && 'audio', g.ai.text && 'writing'].filter(Boolean);
+    return (parts.length ? `AI-generated ${parts.join(', ')}.` : 'No AI content declared.') + (g.ai.live ? ' Uses AI while playing.' : '');
+  };
+  const reasonLabel = { broken: "Doesn't work", malicious: 'Harmful', inappropriate: 'Inappropriate', copyright: 'Copies someone else', spam: 'Spam or duplicate', other: 'Other' };
+  main.innerHTML = html`
+    <div class="wrap admin">
+      <div class="page-head"><h1>Admin</h1><p>Approve games and updates before players see them, and handle reports.</p></div>
+      <section class="admin-section">
+        <h2>Review queue <span class="count">${queue.games.length}</span></h2>
+        ${raw(queue.games.length ? queue.games.map((g) => `
+          <article class="review-card" data-slug="${esc(g.slug)}">
+            <div class="thumb">${g.review.pendingCover ? `<img src="${esc(g.review.pendingCover)}" alt="">` : art(g)}</div>
+            <div class="grow">
+              <span class="badge badge-pending">${esc(kindOf(g))}</span>
+              <h3>${esc(g.title)}</h3>
+              <p class="hint">by ${esc(g.creator)}, ${esc(g.genre)}${g.kind === 'link' ? ', linked game' : ''}</p>
+              ${g.tagline ? `<p>${esc(g.tagline)}</p>` : ''}
+              ${g.review.pendingUrl || (g.kind === 'link' && g.status === 'pending') ? `<p class="hint">Link: ${esc(g.review.pendingUrl || g.externalUrl)}</p>` : ''}
+              <details><summary>Description and AI disclosure</summary>${g.description ? `<p class="desc">${esc(g.description)}</p>` : ''}<p>${esc(aiText(g))}</p></details>
+              ${g.review.flags.length ? `<ul class="flags">${g.review.flags.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>` : '<p class="hint">Automatic checks found nothing.</p>'}
+              <div class="actions">
+                <a class="btn btn-sm" href="/game/${encodeURIComponent(g.slug)}" data-link>Preview</a>
+                <button class="btn btn-primary btn-sm" type="button" data-act="approve">Approve</button>
+                <button class="btn btn-sm btn-danger" type="button" data-act="reject">Reject</button>
+              </div>
+            </div>
+          </article>`).join('') : '<div class="empty"><h2>Nothing to review</h2><p>New games and updates show up here.</p></div>')}
+      </section>
+      <section class="admin-section">
+        <h2>Player reports <span class="count">${reports.reports.length}</span></h2>
+        ${raw(reports.reports.length ? `<div class="list">${reports.reports.map((r) => `
+          <div class="list-item" data-report="${r.id}" data-slug="${esc(r.slug)}">
+            <div class="grow"><h3><a href="/game/${encodeURIComponent(r.slug)}" data-link>${esc(r.title)}</a></h3>
+            <p>${esc(reasonLabel[r.reason] || r.reason)}${r.details ? `: ${esc(r.details)}` : ''}</p><p class="hint">${fmtDate(r.created_at)}${r.status === 'hidden' ? ', game is hidden' : ''}</p></div>
+            ${r.status === 'live' ? '<button class="btn btn-sm btn-danger" type="button" data-hide>Hide game</button>' : ''}
+            <button class="btn btn-sm" type="button" data-dismiss>Dismiss</button>
+          </div>`).join('')}</div>` : '<p class="hint">No reports.</p>')}
+      </section>
+      <section class="admin-section">
+        <h2>Storage</h2>
+        <p>${usage.storageMB} MB of ${Math.round(usage.storageCapMB)} MB used. ${usage.writesThisMonth.toLocaleString()} of ${usage.writesCapPerMonth.toLocaleString()} uploads this month. Uploads pause at these limits so the site stays on the free tier.</p>
+      </section>
+      <p style="margin-top:28px"><button class="btn btn-sm" type="button" id="signout">Sign out of admin on this device</button></p>
+    </div>`;
+  main.querySelectorAll('.review-card [data-act]').forEach((b) => b.addEventListener('click', async () => {
+    const slug = b.closest('.review-card').dataset.slug;
+    if (await reviewAction(slug, b.dataset.act)) render();
+  }));
+  main.querySelectorAll('[data-hide]').forEach((b) => b.addEventListener('click', async () => {
+    const slug = b.closest('[data-slug]').dataset.slug;
+    try { await api('/games/' + encodeURIComponent(slug), { method: 'PATCH', body: { status: 'hidden' }, headers }); toast('Game hidden'); render(); }
+    catch (err) { toast(err.message); }
+  }));
+  main.querySelectorAll('[data-dismiss]').forEach((b) => b.addEventListener('click', async () => {
+    const id = b.closest('[data-report]').dataset.report;
+    try { await api('/admin/reports/' + id, { method: 'DELETE', headers }); render(); }
+    catch (err) { toast(err.message); }
+  }));
+  $('#signout').addEventListener('click', () => { store.set('sp:admin', null); go('/'); });
 }
 
 // ---------- start ----------

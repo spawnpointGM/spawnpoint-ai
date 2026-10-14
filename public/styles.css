@@ -235,6 +235,35 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--c
 .list-item h3 { font-size: 1.05rem; }
 .list-item p { color: var(--ink-3); font-size: .88rem; }
 
+/* ---------- review & admin ---------- */
+.banner { display: flex; gap: 16px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; border-radius: 12px; padding: 14px 16px; margin-top: 20px; border: 1px solid #C9D0F7; background: var(--cobalt-tint); }
+.banner-bad { background: #FBEAEA; border-color: #EBC1C1; }
+.banner .grow { flex: 1; min-width: 220px; }
+.banner strong { font-family: var(--display); font-size: 1.05rem; }
+.banner p { margin-top: 4px; color: var(--ink-2); }
+.banner-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.form > .banner { margin-top: 0; margin-bottom: 4px; }
+.flags { margin: 8px 0 0; padding-left: 18px; font-size: .9rem; color: #8A5300; }
+.badge { display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: .8rem; font-weight: 700; background: var(--line-2); color: var(--ink-2); }
+.badge-live { background: #E5F5EC; color: var(--good); }
+.badge-pending { background: #FFF1CC; color: #8A5300; }
+.badge-rejected, .badge-hidden { background: #FBEAEA; color: var(--bad); }
+.head-meta { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.admin-section { margin-top: 30px; max-width: 860px; }
+.admin-section h2 { font-size: 1.35rem; margin-bottom: 12px; display: flex; align-items: center; gap: 10px; }
+.count { font-family: var(--body); font-size: .85rem; background: var(--ink); color: #fff; border-radius: 999px; padding: 1px 9px; }
+.review-card { display: flex; gap: 16px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-bottom: 14px; }
+.review-card .thumb { width: 168px; aspect-ratio: 16/9; border-radius: 8px; overflow: hidden; position: relative; background: var(--stage); flex: none; }
+.review-card .thumb img { width: 100%; height: 100%; object-fit: cover; }
+.review-card .thumb .gen-art { font-size: 1.6rem; }
+.review-card .grow { flex: 1; min-width: 0; display: grid; gap: 6px; justify-items: start; }
+.review-card h3 { font-size: 1.15rem; }
+.review-card details { font-size: .93rem; color: var(--ink-2); }
+.review-card summary { cursor: pointer; font-weight: 600; color: var(--ink); }
+.review-card .desc { white-space: pre-wrap; margin: 6px 0; }
+.review-card .actions { margin-top: 6px; }
+@media (max-width: 600px) { .review-card { flex-direction: column; } .review-card .thumb { width: 100%; } }
+
 dialog { border: 0; border-radius: 14px; padding: 24px; max-width: 460px; width: calc(100% - 32px); box-shadow: 0 20px 60px rgba(14,17,36,.3); }
 dialog::backdrop { background: rgba(14,17,36,.5); }
 dialog h2 { font-size: 1.35rem; margin-bottom: 14px; }

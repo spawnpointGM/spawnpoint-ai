@@ -1,5 +1,8 @@
 // SpawnpointAI: a store for AI-made browser games.
 // One Cloudflare Worker serves the API, the game files (from R2) and the site (static assets).
+// Every new game and update waits for the site owner's approval before players see it.
+
+import { ADULT_MESSAGE, MAX_SCAN_BYTES, aiImageCheck, checkListing, keywordCheck, visibleText } from './moderation.js';
 
 const GENRES = ['Action', 'Arcade', 'Puzzle', 'Platformer', 'Strategy', 'Simulation', 'Story', 'Racing', 'Sports', 'Shooter', 'Idle', 'Educational', 'Experimental'];
 const BUILDERS = ['Claude', 'ChatGPT', 'Gemini / Google Playground', 'Rosebud AI', 'Cursor', 'GitHub Copilot', 'Replit', 'Bolt', 'Lovable', 'Websim', 'Other', 'None'];
@@ -99,7 +102,19 @@ async function ensureSchema(env) {
     )`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS usage (key TEXT PRIMARY KEY, value INTEGER NOT NULL DEFAULT 0)`),
   ]);
+  await addMissingColumns(env, 'games', {
+    pending_version: 'INTEGER', pending_entry: 'TEXT', pending_url: 'TEXT', cover_pending: 'INTEGER NOT NULL DEFAULT 0',
+    review_note: "TEXT NOT NULL DEFAULT ''", flags: "TEXT NOT NULL DEFAULT ''",
+  });
+  await addMissingColumns(env, 'versions', { review: "TEXT NOT NULL DEFAULT 'none'", flags: "TEXT NOT NULL DEFAULT ''", scans: 'INTEGER NOT NULL DEFAULT 0' });
   schemaReady = true;
+}
+
+async function addMissingColumns(env, table, columns) {
+  const { results } = await env.DB.prepare(`PRAGMA table_info(${table})`).all();
+  const have = new Set(results.map((r) => r.name));
+  const missing = Object.entries(columns).filter(([name]) => !have.has(name));
+  if (missing.length) await env.DB.batch(missing.map(([name, type]) => env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`)));
 }
 
 // ---------- R2 free-tier guard ----------
@@ -189,6 +204,24 @@ async function loadGame(env, slug) {
   return game;
 }
 
+function isAdmin(request, env) {
+  const key = request.headers.get('x-admin-key');
+  return !!(key && env.ADMIN_KEY && key === env.ADMIN_KEY);
+}
+function requireAdmin(request, env) {
+  if (!env.ADMIN_KEY) fail(403, 'Set an ADMIN_KEY for this site in Cloudflare to use the admin tools.');
+  if (!isAdmin(request, env)) fail(403, 'That admin key is wrong.');
+}
+// 'admin', 'owner' or null for the person making this request.
+async function viewerRole(request, env, game) {
+  if (isAdmin(request, env)) return 'admin';
+  const key = request.headers.get('x-edit-key');
+  if (key && (await sha256(key)) === game.edit_key_hash) return 'owner';
+  return null;
+}
+function splitFlags(text) { return text ? text.split('\n').filter(Boolean) : []; }
+function joinFlags(...lists) { return [...new Set(lists.flat().filter(Boolean))].join('\n').slice(0, 2000); }
+
 async function requireEditor(request, env, game) {
   const admin = request.headers.get('x-admin-key');
   if (admin && env.ADMIN_KEY && admin === env.ADMIN_KEY) return true;
@@ -225,6 +258,26 @@ function publicGame(g) {
   };
 }
 
+// Extra review details shown only to the game's creator and the site owner.
+function reviewInfo(g, role) {
+  const pendingVersion = g.pending_version || null;
+  return {
+    role,
+    note: g.review_note || '',
+    pendingVersion,
+    previewUrl: pendingVersion ? `/play/${g.id}/${pendingVersion}/${encodePath(g.pending_entry || 'index.html')}` : (g.kind === 'link' ? (g.pending_url || g.external_url) : null),
+    coverPending: !!g.cover_pending,
+    pendingCover: g.cover_pending ? `/cover/${g.id}?pending=1&v=${encodeURIComponent(g.updated_at)}` : null,
+    pendingUrl: g.pending_url || null,
+    flags: role === 'admin' ? splitFlags(g.flags) : [],
+  };
+}
+function gameFor(g, role) {
+  const out = publicGame(g);
+  if (role) out.review = reviewInfo(g, role);
+  return out;
+}
+
 function encodePath(path) { return path.split('/').map(encodeURIComponent).join('/'); }
 
 // ---------- API ----------
@@ -253,14 +306,25 @@ async function handleApi(request, env, url, ctx) {
     if (sub === 'versions' && method === 'POST' && !parts[3]) return createVersion(request, env, slug);
     if (sub === 'versions' && parts[3] && parts[4] === 'files' && method === 'PUT') return uploadFile(request, env, slug, parts[3], url);
     if (sub === 'versions' && parts[3] && parts[4] === 'publish' && method === 'POST') return publishVersion(request, env, slug, parts[3], ctx);
+    if (sub === 'versions' && parts[3] && parts[4] === 'scan' && method === 'POST') return scanImage(request, env, slug, parts[3], url);
     if (sub === 'cover' && method === 'PUT') return uploadCover(request, env, slug);
     if (sub === 'play' && method === 'POST') return recordPlay(env, slug);
     if (sub === 'vote' && method === 'POST') return vote(request, env, slug);
     if (sub === 'report' && method === 'POST') return report(request, env, slug);
   }
 
+  if (parts[0] === 'admin') {
+    requireAdmin(request, env);
+    if (parts[1] === 'queue' && method === 'GET') return reviewQueue(env);
+    if (parts[1] === 'games' && parts[2] && parts[3] === 'approve' && method === 'POST') return approveGame(env, parts[2], ctx);
+    if (parts[1] === 'games' && parts[2] && parts[3] === 'reject' && method === 'POST') return rejectGame(request, env, parts[2], ctx);
+    if (parts[1] === 'reports' && parts[2] && method === 'DELETE') {
+      await env.DB.prepare('DELETE FROM reports WHERE id = ?').bind(parseInt(parts[2], 10)).run();
+      return json({ ok: true });
+    }
+  }
+
   if (parts[0] === 'admin' && parts[1] === 'usage' && method === 'GET') {
-    if (!env.ADMIN_KEY || request.headers.get('x-admin-key') !== env.ADMIN_KEY) fail(403, 'Admin key required.');
     const stored = await env.DB.prepare(`SELECT value FROM usage WHERE key = 'storage_bytes'`).first();
     const writes = await env.DB.prepare(`SELECT value FROM usage WHERE key = ?`).bind(monthKey()).first();
     return json({
@@ -270,8 +334,7 @@ async function handleApi(request, env, url, ctx) {
   }
 
   if (parts[0] === 'admin' && parts[1] === 'reports' && method === 'GET') {
-    if (!env.ADMIN_KEY || request.headers.get('x-admin-key') !== env.ADMIN_KEY) fail(403, 'Admin key required.');
-    const { results } = await env.DB.prepare(`SELECT r.*, g.slug, g.title FROM reports r JOIN games g ON g.id = r.game_id ORDER BY r.id DESC LIMIT 200`).all();
+    const { results } = await env.DB.prepare(`SELECT r.*, g.slug, g.title, g.status FROM reports r JOIN games g ON g.id = r.game_id WHERE g.status != 'deleted' ORDER BY r.id DESC LIMIT 200`).all();
     return json({ reports: results });
   }
 
@@ -313,8 +376,11 @@ async function listGames(env, url) {
 
 async function getGame(request, env, slug) {
   const game = await loadGame(env, slug);
-  const { results: versions } = await env.DB.prepare(`SELECT version, notes, size_bytes, file_count, created_at FROM versions WHERE game_id = ? AND published = 1 ORDER BY version DESC LIMIT 20`).bind(game.id).all();
-  return json({ game: publicGame(game), versions });
+  const role = await viewerRole(request, env, game);
+  if (game.status !== 'live' && !role) fail(404, 'No game with that link exists. It may have been removed or still be waiting for review.');
+  const { results: versions } = await env.DB.prepare(`SELECT version, notes, size_bytes, file_count, created_at FROM versions
+      WHERE game_id = ? AND published = 1 AND review IN ('approved', 'none') ORDER BY version DESC LIMIT 20`).bind(game.id).all();
+  return json({ game: gameFor(game, role), versions });
 }
 
 function readMeta(body, partial = false) {
@@ -350,6 +416,8 @@ async function createGame(request, env) {
     } catch { fail(400, 'Enter a full game link that starts with https://'); }
   }
 
+  const notes = await checkListing(env, listingFields(meta), fail);
+
   const ipHash = await clientHash(request);
   const perDay = Number(env.NEW_GAMES_PER_DAY || 10);
   const recent = await env.DB.prepare(`SELECT COUNT(*) AS n FROM games WHERE ip_hash = ? AND created_at > datetime('now', '-1 day')`).bind(ipHash).first();
@@ -361,12 +429,14 @@ async function createGame(request, env) {
   const taken = await env.DB.prepare('SELECT 1 FROM games WHERE slug = ?').bind(slug).first();
   if (taken) slug = `${slug}-${id.slice(0, 5)}`;
 
+  // Linked games go straight to review; uploaded games wait until their files are in.
+  const status = kind === 'link' ? (isAdmin(request, env) ? 'live' : 'pending') : 'draft';
   await env.DB.prepare(`INSERT INTO games (id, slug, title, creator, tagline, description, genre, tags, controls, kind, external_url,
-      ai_code, ai_art, ai_audio, ai_text, ai_live, builder, mobile, status, edit_key_hash, ip_hash)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      ai_code, ai_art, ai_audio, ai_text, ai_live, builder, mobile, status, edit_key_hash, ip_hash, flags)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(id, slug, meta.title, meta.creator, meta.tagline, meta.description, meta.genre, meta.tags, meta.controls, kind, externalUrl,
       meta.ai_code, meta.ai_art, meta.ai_audio, meta.ai_text, meta.ai_live, meta.builder, meta.mobile,
-      kind === 'link' ? 'live' : 'draft', await sha256(editKey), ipHash)
+      status, await sha256(editKey), ipHash, joinFlags(notes))
     .run();
 
   let version = null;
@@ -374,7 +444,11 @@ async function createGame(request, env) {
     version = 1;
     await env.DB.prepare('INSERT INTO versions (game_id, version, notes) VALUES (?, 1, ?)').bind(id, 'First release').run();
   }
-  return json({ slug, id, editKey, version }, 201);
+  return json({ slug, id, editKey, version, status }, 201);
+}
+
+function listingFields(m) {
+  return { title: m.title, creator: m.creator, pitch: m.tagline, description: m.description, tags: m.tags, controls: m.controls };
 }
 
 async function updateGame(request, env, slug) {
@@ -382,20 +456,32 @@ async function updateGame(request, env, slug) {
   await requireEditor(request, env, game);
   const body = await readJson(request);
   const meta = readMeta(body, true);
+  const admin = isAdmin(request, env);
+  const textChanged = ['title', 'creator', 'tagline', 'description', 'tags', 'controls'].some((k) => meta[k] !== undefined && meta[k] !== game[k]);
+  if (textChanged && !admin) {
+    const notes = await checkListing(env, listingFields({ ...game, ...meta }), fail);
+    meta.flags = joinFlags(splitFlags(game.flags), notes);
+  }
   if (body.externalUrl !== undefined && game.kind === 'link') {
+    let next;
     try {
       const u = new URL(String(body.externalUrl));
       if (u.protocol !== 'https:') throw new Error();
-      meta.external_url = u.toString();
+      next = u.toString();
     } catch { fail(400, 'Enter a full game link that starts with https://'); }
+    if (next !== game.external_url) {
+      if (admin || game.status !== 'live') { meta.external_url = next; if (!admin && game.status === 'rejected') meta.status = 'pending'; }
+      else meta.pending_url = next; // a live game keeps its approved link until the new one is reviewed
+    }
   }
-  const isAdmin = env.ADMIN_KEY && request.headers.get('x-admin-key') === env.ADMIN_KEY;
-  if (isAdmin && ['live', 'hidden'].includes(body.status)) meta.status = body.status;
+  // Editing a rejected link game sends it back for review.
+  if (!admin && game.kind === 'link' && game.status === 'rejected' && Object.keys(meta).length) { meta.status = 'pending'; meta.review_note = ''; }
+  if (admin && ['live', 'hidden'].includes(body.status)) meta.status = body.status;
   const keys = Object.keys(meta);
-  if (!keys.length) return json({ game: publicGame(game) });
+  if (!keys.length) return json({ game: gameFor(game, admin ? 'admin' : 'owner') });
   await env.DB.prepare(`UPDATE games SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = datetime('now') WHERE id = ?`)
     .bind(...keys.map((k) => meta[k]), game.id).run();
-  return json({ game: publicGame(await loadGame(env, slug)) });
+  return json({ game: gameFor(await loadGame(env, slug), admin ? 'admin' : 'owner') });
 }
 
 async function createVersion(request, env, slug) {
@@ -436,38 +522,163 @@ async function uploadFile(request, env, slug, versionRaw, url) {
 async function publishVersion(request, env, slug, versionRaw, ctx) {
   const game = await loadGame(env, slug);
   await requireEditor(request, env, game);
+  const admin = isAdmin(request, env);
   const version = parseInt(versionRaw, 10);
   const ver = await env.DB.prepare('SELECT * FROM versions WHERE game_id = ? AND version = ?').bind(game.id, version).first();
   if (!ver) fail(404, 'That version does not exist.');
+  if (ver.published) fail(409, 'This version was already submitted.');
   const body = await readJson(request).catch(() => ({}));
   const entry = cleanPath(body.entry || 'index.html');
   if (!/\.html?$/i.test(entry)) fail(400, 'The start file must be an .html file.');
   const head = await env.FILES.head(`games/${game.id}/v${version}/${entry}`);
   if (!head) fail(400, `The start file ${entry} wasn't uploaded. Make sure your game includes it.`);
 
-  const previous = game.current_version;
+  // Automatic checks: words in the game's pages, plus any images the uploader scanned.
+  const notes = splitFlags(ver.flags);
+  let explicit = notes.some((n) => n.startsWith('EXPLICIT'));
+  if (!explicit) {
+    await bumpUsage(env, monthKey(), 1);
+    const list = await env.FILES.list({ prefix: `games/${game.id}/v${version}/`, limit: 1000 });
+    const pages = list.objects.filter((o) => /\.html?$/i.test(o.key) && o.size < 1024 * 1024).slice(0, 10);
+    for (const o of pages) {
+      const obj = await env.FILES.get(o.key);
+      const { hard, soft } = keywordCheck(visibleText(await obj.text()));
+      if (hard) { explicit = true; break; }
+      if (soft) notes.push(`Game page mentions "${soft}"`);
+    }
+    const images = list.objects.filter((o) => /\.(png|jpe?g|webp|gif)$/i.test(o.key));
+    if (images.length && ver.scans === 0) notes.push('Game images were not auto-checked');
+  }
+  if (explicit) {
+    await env.DB.batch([
+      env.DB.prepare(`UPDATE versions SET published = 1, review = 'rejected' WHERE game_id = ? AND version = ?`).bind(game.id, version),
+      env.DB.prepare(`UPDATE games SET review_note = ?, status = CASE WHEN current_version = 0 THEN 'rejected' ELSE status END, updated_at = datetime('now') WHERE id = ?`)
+        .bind('Automatically rejected: the game appears to contain adult content.', game.id),
+    ]);
+    ctx.waitUntil(deletePrefix(env, `games/${game.id}/v${version}/`).catch(() => {}));
+    fail(422, "Your game looks like it contains adult content, which isn't allowed on SpawnpointAI.");
+  }
+
+  // A newer submission replaces one still waiting for review.
+  const superseded = game.pending_version && game.pending_version !== version ? game.pending_version : null;
   await env.DB.batch([
-    env.DB.prepare('UPDATE versions SET published = 1 WHERE game_id = ? AND version = ?').bind(game.id, version),
-    env.DB.prepare(`UPDATE games SET current_version = ?, entry = ?, status = CASE WHEN status = 'draft' THEN 'live' ELSE status END, updated_at = datetime('now') WHERE id = ?`).bind(version, entry, game.id),
+    env.DB.prepare(`UPDATE versions SET published = 1, review = 'pending', flags = ? WHERE game_id = ? AND version = ?`).bind(joinFlags(notes), game.id, version),
+    env.DB.prepare(`UPDATE games SET pending_version = ?, pending_entry = ?, review_note = '', flags = ?,
+        status = CASE WHEN status IN ('draft', 'rejected') THEN 'pending' ELSE status END, updated_at = datetime('now') WHERE id = ?`)
+      .bind(version, entry, joinFlags(splitFlags(game.flags), notes), game.id),
   ]);
-  // Keep the previous version for rollback; remove anything older to save storage.
-  if (previous && previous < version - 1) ctx.waitUntil(deletePrefix(env, `games/${game.id}/v${previous - 1}/`).catch(() => {}));
-  return json({ game: publicGame(await loadGame(env, slug)) });
+  if (superseded) {
+    await env.DB.prepare(`UPDATE versions SET review = 'superseded' WHERE game_id = ? AND version = ?`).bind(game.id, superseded).run();
+    ctx.waitUntil(deletePrefix(env, `games/${game.id}/v${superseded}/`).catch(() => {}));
+  }
+  if (admin) return approveGame(env, slug, ctx);
+  return json({ game: gameFor(await loadGame(env, slug), 'owner'), submitted: true });
+}
+
+// Checks one image from an unpublished version with the vision model. The upload page calls
+// this for the game's main images before submitting.
+async function scanImage(request, env, slug, versionRaw, url) {
+  const game = await loadGame(env, slug);
+  await requireEditor(request, env, game);
+  const version = parseInt(versionRaw, 10);
+  const ver = await env.DB.prepare('SELECT * FROM versions WHERE game_id = ? AND version = ?').bind(game.id, version).first();
+  if (!ver || ver.published) fail(409, 'Images can only be checked before a version is submitted.');
+  if (ver.scans >= 4) return json({ result: 'skipped' });
+  const path = cleanPath(url.searchParams.get('path') || '');
+  if (!/\.(png|jpe?g|webp|gif)$/i.test(path)) fail(400, 'Only images can be checked.');
+  const obj = await env.FILES.get(`games/${game.id}/v${version}/${path}`);
+  if (!obj) fail(404, 'That image is not part of this upload.');
+  if (obj.size > MAX_SCAN_BYTES) return json({ result: 'skipped' });
+  const result = await aiImageCheck(env, await obj.arrayBuffer());
+  const note = result === 'explicit' ? `EXPLICIT image: ${path}` : result === 'unavailable' ? `Image not AI-checked: ${path}` : null;
+  await env.DB.prepare(`UPDATE versions SET scans = scans + 1, flags = ? WHERE game_id = ? AND version = ?`)
+    .bind(joinFlags(splitFlags(ver.flags), [note]), game.id, version).run();
+  if (result === 'explicit') fail(422, "Your game looks like it contains adult content, which isn't allowed on SpawnpointAI.");
+  return json({ result });
 }
 
 async function uploadCover(request, env, slug) {
   const game = await loadGame(env, slug);
   await requireEditor(request, env, game);
+  const admin = isAdmin(request, env);
   const type = request.headers.get('content-type') || '';
   if (!/^image\/(png|jpeg|webp|gif)$/.test(type)) fail(400, 'Use a PNG, JPG, WebP or GIF image for the cover.');
   const data = await request.arrayBuffer();
   if (data.byteLength > MAX_COVER_BYTES) fail(413, 'Keep the cover image under 3 MB.');
-  const old = game.has_cover ? await env.FILES.head(`covers/${game.id}`) : null;
+  const check = admin ? 'safe' : await aiImageCheck(env, data);
+  if (check === 'explicit') fail(422, ADULT_MESSAGE);
+
+  // A live game keeps its approved cover until the new one is reviewed.
+  const staged = game.status === 'live' && !admin;
+  const key = staged ? `covers/${game.id}-pending` : `covers/${game.id}`;
+  const old = await env.FILES.head(key);
   await reserveR2(env, data.byteLength);
-  await env.FILES.put(`covers/${game.id}`, data, { httpMetadata: { contentType: type } });
+  await env.FILES.put(key, data, { httpMetadata: { contentType: type } });
   if (old) await releaseR2(env, old.size);
-  await env.DB.prepare(`UPDATE games SET has_cover = 1, updated_at = datetime('now') WHERE id = ?`).bind(game.id).run();
-  return json({ ok: true });
+  const flags = check === 'unavailable' ? joinFlags(splitFlags(game.flags), ['Cover image was not AI-checked']) : game.flags;
+  await env.DB.prepare(`UPDATE games SET ${staged ? 'cover_pending = 1' : 'has_cover = 1'}, flags = ?, updated_at = datetime('now') WHERE id = ?`)
+    .bind(flags, game.id).run();
+  return json({ ok: true, pending: staged });
+}
+
+// ---------- review ----------
+
+async function reviewQueue(env) {
+  const { results } = await env.DB.prepare(`SELECT * FROM games WHERE status != 'deleted'
+      AND (status = 'pending' OR pending_version IS NOT NULL OR cover_pending = 1 OR pending_url IS NOT NULL)
+      ORDER BY updated_at ASC LIMIT 100`).all();
+  const { results: counts } = await env.DB.prepare(`SELECT COUNT(*) AS n FROM reports r JOIN games g ON g.id = r.game_id WHERE g.status != 'deleted'`).all();
+  return json({ games: results.map((g) => gameFor(g, 'admin')), reports: counts[0]?.n || 0 });
+}
+
+async function approveGame(env, slug, ctx) {
+  const game = await loadGame(env, slug);
+  const sets = [`status = CASE WHEN status = 'hidden' THEN 'hidden' ELSE 'live' END`, `review_note = ''`, `flags = ''`, `pending_version = NULL`, `pending_entry = NULL`, `pending_url = NULL`, `cover_pending = 0`];
+  const binds = [];
+  const stmts = [];
+  if (game.pending_version) {
+    sets.push('current_version = ?', 'entry = ?');
+    binds.push(game.pending_version, game.pending_entry || 'index.html');
+    stmts.push(env.DB.prepare(`UPDATE versions SET review = 'approved' WHERE game_id = ? AND version = ?`).bind(game.id, game.pending_version));
+  }
+  if (game.pending_url) { sets.push('external_url = ?'); binds.push(game.pending_url); }
+  if (game.cover_pending) {
+    const staged = await env.FILES.get(`covers/${game.id}-pending`);
+    if (staged) {
+      const bytes = await staged.arrayBuffer();
+      const old = await env.FILES.head(`covers/${game.id}`);
+      await reserveR2(env, bytes.byteLength);
+      await env.FILES.put(`covers/${game.id}`, bytes, { httpMetadata: staged.httpMetadata });
+      await env.FILES.delete(`covers/${game.id}-pending`);
+      await releaseR2(env, bytes.byteLength + (old?.size || 0));
+      sets.push('has_cover = 1');
+    }
+  }
+  stmts.push(env.DB.prepare(`UPDATE games SET ${sets.join(', ')}, updated_at = datetime('now') WHERE id = ?`).bind(...binds, game.id));
+  await env.DB.batch(stmts);
+  // Keep the version players had before (for rollback); clear out anything older.
+  const previous = game.current_version;
+  if (game.pending_version && previous && previous < game.pending_version - 1) {
+    ctx.waitUntil(deletePrefix(env, `games/${game.id}/v${previous - 1}/`).catch(() => {}));
+  }
+  return json({ game: gameFor(await loadGame(env, slug), 'admin'), approved: true });
+}
+
+async function rejectGame(request, env, slug, ctx) {
+  const game = await loadGame(env, slug);
+  const body = await readJson(request).catch(() => ({}));
+  const note = cleanText(body.reason, 500, 'reason') || 'The site owner did not approve this submission.';
+  const stmts = [];
+  if (game.pending_version) {
+    stmts.push(env.DB.prepare(`UPDATE versions SET review = 'rejected' WHERE game_id = ? AND version = ?`).bind(game.id, game.pending_version));
+    ctx.waitUntil(deletePrefix(env, `games/${game.id}/v${game.pending_version}/`).catch(() => {}));
+  }
+  if (game.cover_pending) ctx.waitUntil(deletePrefix(env, `covers/${game.id}-pending`).catch(() => {}));
+  const neverLive = game.status === 'pending';
+  stmts.push(env.DB.prepare(`UPDATE games SET review_note = ?, flags = '', pending_version = NULL, pending_entry = NULL, pending_url = NULL,
+      cover_pending = 0, status = ?, updated_at = datetime('now') WHERE id = ?`).bind(note, neverLive ? 'rejected' : game.status, game.id));
+  await env.DB.batch(stmts);
+  return json({ game: gameFor(await loadGame(env, slug), 'admin'), rejected: true });
 }
 
 async function deleteGame(request, env, slug, ctx) {
@@ -498,6 +709,7 @@ async function recordPlay(env, slug) {
 
 async function vote(request, env, slug) {
   const game = await loadGame(env, slug);
+  if (game.status !== 'live') fail(404, 'This game is not live yet.');
   const body = await readJson(request);
   const voter = cleanText(body.voter, 64, 'voter id', true);
   const value = [1, -1, 0].includes(body.value) ? body.value : fail(400, 'Vote must be 1, -1 or 0.');
@@ -516,6 +728,7 @@ async function vote(request, env, slug) {
 
 async function report(request, env, slug) {
   const game = await loadGame(env, slug);
+  if (game.status !== 'live') fail(404, 'This game is not live.');
   const body = await readJson(request);
   const reasons = ['broken', 'malicious', 'inappropriate', 'copyright', 'spam', 'other'];
   const reason = reasons.includes(body.reason) ? body.reason : fail(400, 'Pick a reason for the report.');
@@ -593,7 +806,7 @@ async function servePlayFile(request, env, url) {
 async function serveCover(env, url) {
   const id = url.pathname.split('/')[2] || '';
   if (!/^[a-f0-9]{16}$/.test(id)) return new Response('Not found', { status: 404 });
-  const obj = await env.FILES.get(`covers/${id}`);
+  const obj = await env.FILES.get(url.searchParams.get('pending') ? `covers/${id}-pending` : `covers/${id}`);
   if (!obj) return new Response('Not found', { status: 404 });
   return new Response(obj.body, {
     headers: { 'content-type': obj.httpMetadata?.contentType || 'image/png', 'cache-control': 'public, max-age=86400', 'x-content-type-options': 'nosniff' },

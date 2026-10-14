@@ -28,16 +28,27 @@ When you publish, you get an **edit key**. It's saved in your browser under My g
 
 Each game runs in a sandbox with no access to the site, its visitors' data or other games. Games can still use `localStorage` for saves: the site stores that data per game, per player, and it carries over when you publish a new version. Cookies and IndexedDB are not available inside games.
 
-## Moderation
+## Reviewing games
 
-Players can report games. As the site owner, list reports and remove a game with your `ADMIN_KEY`:
+Nothing goes public until you approve it. New games, new versions, new cover images and changed links all wait in a review queue. While an update waits, players keep the version you already approved.
 
-```sh
-curl https://YOUR-SITE/api/admin/reports -H "x-admin-key: YOUR_ADMIN_KEY"
-curl -X DELETE https://YOUR-SITE/api/games/GAME-SLUG -H "x-admin-key: YOUR_ADMIN_KEY"
-```
+Open **`/admin`** on your site (for example `https://spawnpoint-ai.<your-name>.workers.dev/admin`) and sign in with your `ADMIN_KEY`. From there you can:
 
-To hide a game without deleting it: `curl -X PATCH https://YOUR-SITE/api/games/GAME-SLUG -H "x-admin-key: YOUR_ADMIN_KEY" -H "content-type: application/json" -d '{"status":"hidden"}'`.
+- Preview each submission, then **Approve** or **Reject** it. Rejections ask for a reason, which the creator sees on their game page.
+- See player reports, hide a reported game, or dismiss the report.
+- Check storage use against the free-tier caps.
+
+Creators see their game's status (waiting for review, live, or not approved) under **My games**.
+
+### Automatic adult-content filter
+
+Before anything reaches your queue, the site screens it:
+
+- **Listing text** (title, pitch, description, tags, controls) is checked against a list of explicit terms, including disguised spellings, and by Cloudflare's Llama Guard safety model.
+- **Cover images** and up to four of the game's main images are checked by a vision model.
+- **Game pages** are checked for explicit terms in their visible text.
+
+Obvious adult content is rejected immediately with a message to the creator. Borderline words and any check that couldn't run are listed on the review card so you can look closer. The AI checks use Workers AI's free daily allowance; on the free plan, it stops working at the cap instead of charging, and submissions then simply arrive marked "not AI-checked".
 
 ## Staying on the free tier
 
@@ -81,6 +92,7 @@ npm run dev   # http://localhost:8787
 
 ## How it's built
 
-- `src/index.js` — the Worker: API, game file serving from R2, share previews for game pages
+- `src/index.js` — the Worker: API, review queue, game file serving from R2, share previews for game pages
+- `src/moderation.js` — the automatic adult-content checks
 - `public/` — the site (plain HTML, CSS and JavaScript, no build step)
 - `wrangler.jsonc` — Cloudflare config; the database and bucket are created on first deploy

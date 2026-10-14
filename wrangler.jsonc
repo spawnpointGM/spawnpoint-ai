@@ -12,6 +12,8 @@
   // Created automatically on first deploy (no IDs needed).
   "d1_databases": [{ "binding": "DB", "database_name": "spawnpoint-ai-db" }],
   "r2_buckets": [{ "binding": "FILES", "bucket_name": "spawnpoint-ai-games" }],
+  // Workers AI checks listings and images for adult content (free daily allowance; no charge on the free plan).
+  "ai": { "binding": "AI" },
   "vars": {
     "SITE_NAME": "SpawnpointAI",
     "MAX_GAME_MB": "50",
