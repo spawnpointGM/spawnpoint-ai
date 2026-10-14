@@ -39,6 +39,16 @@ curl -X DELETE https://YOUR-SITE/api/games/GAME-SLUG -H "x-admin-key: YOUR_ADMIN
 
 To hide a game without deleting it: `curl -X PATCH https://YOUR-SITE/api/games/GAME-SLUG -H "x-admin-key: YOUR_ADMIN_KEY" -H "content-type: application/json" -d '{"status":"hidden"}'`.
 
+## Staying on the free tier
+
+Cloudflare has no hard spending cap for R2, so the site enforces its own: it counts stored bytes and monthly write operations, and pauses uploads at **9 GB** or **900,000 writes a month** (R2's free tier is 10 GB and 1 million). Playing games keeps working when uploads are paused, and deleting games frees space. Reads need no cap on the Workers Free plan, because every read goes through the Worker, which stops at 100,000 requests a day.
+
+Check current usage with your admin key:
+
+```sh
+curl https://YOUR-SITE/api/admin/usage -H "x-admin-key: YOUR_ADMIN_KEY"
+```
+
 ## Settings
 
 Change these in `wrangler.jsonc` (or in the Cloudflare dashboard under the Worker's settings):
@@ -49,6 +59,8 @@ Change these in `wrangler.jsonc` (or in the Cloudflare dashboard under the Worke
 | `MAX_GAME_MB` | 50 | Largest upload per game version |
 | `MAX_FILES` | 1000 | Most files per game version |
 | `NEW_GAMES_PER_DAY` | 10 | New games one person can publish per day |
+| `R2_MAX_GB` | 9 | Uploads pause when stored files reach this size |
+| `R2_MAX_WRITES_PER_MONTH` | 900000 | Uploads pause after this many R2 writes in a calendar month |
 
 ## Free tier limits and scaling
 

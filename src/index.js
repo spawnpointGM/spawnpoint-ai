@@ -97,9 +97,39 @@ async function ensureSchema(env) {
       details TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS usage (key TEXT PRIMARY KEY, value INTEGER NOT NULL DEFAULT 0)`),
   ]);
   schemaReady = true;
 }
+
+// ---------- R2 free-tier guard ----------
+// Cloudflare has no hard spending cap for R2, so the site keeps its own count of
+// stored bytes and write operations and refuses uploads before the free tier runs out.
+// Reads need no guard while on the Workers Free plan: every read goes through this
+// Worker, which is capped at 100,000 requests a day (about 3M a month, under R2's 10M).
+
+function monthKey() { return 'writes:' + new Date().toISOString().slice(0, 7); }
+
+async function bumpUsage(env, key, delta) {
+  const row = await env.DB.prepare(`INSERT INTO usage (key, value) VALUES (?1, ?2)
+      ON CONFLICT(key) DO UPDATE SET value = MAX(0, value + ?2) RETURNING value`).bind(key, delta).first();
+  return row.value;
+}
+
+// Reserve room for one write of `bytes` to R2. Throws (and rolls back) if it would pass a cap.
+async function reserveR2(env, bytes) {
+  const maxBytes = Number(env.R2_MAX_GB || 9) * 1024 ** 3;
+  const maxWrites = Number(env.R2_MAX_WRITES_PER_MONTH || 900000);
+  const stored = await bumpUsage(env, 'storage_bytes', bytes);
+  const writes = await bumpUsage(env, monthKey(), 1);
+  if (stored > maxBytes || writes > maxWrites) {
+    await bumpUsage(env, 'storage_bytes', -bytes);
+    await bumpUsage(env, monthKey(), -1);
+    fail(507, 'Uploads are paused because this site has reached its free storage limit. Try again later.');
+  }
+}
+
+async function releaseR2(env, bytes) { if (bytes > 0) await bumpUsage(env, 'storage_bytes', -bytes); }
 
 // ---------- helpers ----------
 
@@ -227,6 +257,16 @@ async function handleApi(request, env, url, ctx) {
     if (sub === 'play' && method === 'POST') return recordPlay(env, slug);
     if (sub === 'vote' && method === 'POST') return vote(request, env, slug);
     if (sub === 'report' && method === 'POST') return report(request, env, slug);
+  }
+
+  if (parts[0] === 'admin' && parts[1] === 'usage' && method === 'GET') {
+    if (!env.ADMIN_KEY || request.headers.get('x-admin-key') !== env.ADMIN_KEY) fail(403, 'Admin key required.');
+    const stored = await env.DB.prepare(`SELECT value FROM usage WHERE key = 'storage_bytes'`).first();
+    const writes = await env.DB.prepare(`SELECT value FROM usage WHERE key = ?`).bind(monthKey()).first();
+    return json({
+      storageMB: +((stored?.value || 0) / 1024 ** 2).toFixed(2), storageCapMB: Number(env.R2_MAX_GB || 9) * 1024,
+      writesThisMonth: writes?.value || 0, writesCapPerMonth: Number(env.R2_MAX_WRITES_PER_MONTH || 900000),
+    });
   }
 
   if (parts[0] === 'admin' && parts[1] === 'reports' && method === 'GET') {
@@ -388,6 +428,7 @@ async function uploadFile(request, env, slug, versionRaw, url) {
   if (totals.size_bytes > maxBytes) fail(413, `This game is over the ${env.MAX_GAME_MB || 50} MB limit. Compress images or audio and try again.`);
   if (totals.file_count > maxFiles) fail(413, `This game has more than ${maxFiles} files. Remove files the game doesn't use.`);
 
+  await reserveR2(env, data.byteLength);
   await env.FILES.put(`games/${game.id}/v${version}/${path}`, data, { httpMetadata: { contentType: contentTypeFor(path) } });
   return json({ ok: true, path });
 }
@@ -421,7 +462,10 @@ async function uploadCover(request, env, slug) {
   if (!/^image\/(png|jpeg|webp|gif)$/.test(type)) fail(400, 'Use a PNG, JPG, WebP or GIF image for the cover.');
   const data = await request.arrayBuffer();
   if (data.byteLength > MAX_COVER_BYTES) fail(413, 'Keep the cover image under 3 MB.');
+  const old = game.has_cover ? await env.FILES.head(`covers/${game.id}`) : null;
+  await reserveR2(env, data.byteLength);
   await env.FILES.put(`covers/${game.id}`, data, { httpMetadata: { contentType: type } });
+  if (old) await releaseR2(env, old.size);
   await env.DB.prepare(`UPDATE games SET has_cover = 1, updated_at = datetime('now') WHERE id = ?`).bind(game.id).run();
   return json({ ok: true });
 }
@@ -430,15 +474,19 @@ async function deleteGame(request, env, slug, ctx) {
   const game = await loadGame(env, slug);
   await requireEditor(request, env, game);
   await env.DB.prepare(`UPDATE games SET status = 'deleted', slug = slug || '-deleted-' || id, updated_at = datetime('now') WHERE id = ?`).bind(game.id).run();
-  ctx.waitUntil(Promise.all([deletePrefix(env, `games/${game.id}/`), env.FILES.delete(`covers/${game.id}`)]).catch(() => {}));
+  ctx.waitUntil(Promise.all([deletePrefix(env, `games/${game.id}/`), deletePrefix(env, `covers/${game.id}`)]).catch(() => {}));
   return json({ ok: true });
 }
 
 async function deletePrefix(env, prefix) {
   let cursor;
   do {
+    await bumpUsage(env, monthKey(), 1); // a list is a write-class operation in R2 billing
     const list = await env.FILES.list({ prefix, cursor, limit: 1000 });
-    if (list.objects.length) await env.FILES.delete(list.objects.map((o) => o.key));
+    if (list.objects.length) {
+      await env.FILES.delete(list.objects.map((o) => o.key));
+      await releaseR2(env, list.objects.reduce((n, o) => n + o.size, 0));
+    }
     cursor = list.truncated ? list.cursor : undefined;
   } while (cursor);
 }

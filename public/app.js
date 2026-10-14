@@ -452,7 +452,7 @@ async function uploadBuild(slug, editKey, version, info, entry, onProgress) {
           await api(`/games/${encodeURIComponent(slug)}/versions/${version}/files?path=${encodeURIComponent(path)}`, { method: 'PUT', raw: data, headers: { 'x-edit-key': editKey, 'content-type': 'application/octet-stream' } });
           break;
         } catch (err) {
-          if (++attempt >= 3 || /limit|larger|over the|more than|can't be used/i.test(err.message)) throw err;
+          if (++attempt >= 3 || /limit|larger|over the|more than|can't be used|paused/i.test(err.message)) throw err;
           await new Promise((r) => setTimeout(r, 600 * attempt));
         }
       }

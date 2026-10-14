@@ -16,7 +16,10 @@
     "SITE_NAME": "SpawnpointAI",
     "MAX_GAME_MB": "50",
     "MAX_FILES": "1000",
-    "NEW_GAMES_PER_DAY": "10"
+    "NEW_GAMES_PER_DAY": "10",
+    // Stay under R2's free tier (10 GB stored, 1M writes a month). Uploads pause at these caps.
+    "R2_MAX_GB": "9",
+    "R2_MAX_WRITES_PER_MONTH": "900000"
   },
   "observability": { "enabled": true }
 }
