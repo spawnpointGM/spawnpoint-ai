@@ -1,5 +1,5 @@
 {
-  "name": "spawnpoint",
+  "name": "spawnpoint-ai",
   "version": "0.1.0",
   "description": "A store for AI-made browser games, running on Cloudflare Workers, D1 and R2.",
   "scripts": {

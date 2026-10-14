@@ -1,17 +1,17 @@
-# Spawnpoint
+# SpawnpointAI
 
 A store for browser games made with AI. Players find and play games instantly; creators upload a zip or HTML file (or link to a game hosted elsewhere) and get a game page with ratings, plays and version history.
 
 Runs entirely on Cloudflare's free tier: Workers (site and API), D1 (database) and R2 (game files, no bandwidth fees).
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/YOUR-USERNAME/spawnpoint)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/YOUR-USERNAME/spawnpoint-ai)
 
 ## Deploy it
 
 1. Tap **Deploy to Cloudflare** above and sign in (or create a free Cloudflare account).
 2. Connect your GitHub account when asked. Cloudflare copies this repo into it.
 3. Leave the database and bucket names as they are. For **ADMIN_KEY**, enter a long password only you know.
-4. Tap **Deploy**. In about a minute you get a link like `https://spawnpoint.<your-name>.workers.dev`.
+4. Tap **Deploy**. In about a minute you get a link like `https://spawnpoint-ai.<your-name>.workers.dev`.
 
 If Cloudflare asks you to turn on R2 first, it may ask for a card. That's a verification step; the free tier (10 GB of storage, free bandwidth) isn't charged.
 
@@ -45,7 +45,7 @@ Change these in `wrangler.jsonc` (or in the Cloudflare dashboard under the Worke
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| `SITE_NAME` | Spawnpoint | Name used in page titles and share previews |
+| `SITE_NAME` | SpawnpointAI | Name used in page titles and share previews |
 | `MAX_GAME_MB` | 50 | Largest upload per game version |
 | `MAX_FILES` | 1000 | Most files per game version |
 | `NEW_GAMES_PER_DAY` | 10 | New games one person can publish per day |

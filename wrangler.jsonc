@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "spawnpoint",
+  "name": "spawnpoint-ai",
   "main": "src/index.js",
   "compatibility_date": "2026-09-01",
   "assets": {
@@ -10,10 +10,10 @@
     "run_worker_first": ["/api/*", "/play/*", "/cover/*", "/game/*"]
   },
   // Created automatically on first deploy (no IDs needed).
-  "d1_databases": [{ "binding": "DB", "database_name": "spawnpoint-db" }],
-  "r2_buckets": [{ "binding": "FILES", "bucket_name": "spawnpoint-games" }],
+  "d1_databases": [{ "binding": "DB", "database_name": "spawnpoint-ai-db" }],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "spawnpoint-ai-games" }],
   "vars": {
-    "SITE_NAME": "Spawnpoint",
+    "SITE_NAME": "SpawnpointAI",
     "MAX_GAME_MB": "50",
     "MAX_FILES": "1000",
     "NEW_GAMES_PER_DAY": "10"

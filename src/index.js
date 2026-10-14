@@ -1,4 +1,4 @@
-// Spawnpoint: a store for AI-made browser games.
+// SpawnpointAI: a store for AI-made browser games.
 // One Cloudflare Worker serves the API, the game files (from R2) and the site (static assets).
 
 const GENRES = ['Action', 'Arcade', 'Puzzle', 'Platformer', 'Strategy', 'Simulation', 'Story', 'Racing', 'Sports', 'Shooter', 'Idle', 'Educational', 'Experimental'];
@@ -204,7 +204,7 @@ async function handleApi(request, env, url, ctx) {
   const method = request.method;
 
   if (parts[0] === 'meta' && method === 'GET') {
-    return json({ genres: GENRES, builders: BUILDERS, maxGameMb: Number(env.MAX_GAME_MB || 50), siteName: env.SITE_NAME || 'Spawnpoint' });
+    return json({ genres: GENRES, builders: BUILDERS, maxGameMb: Number(env.MAX_GAME_MB || 50), siteName: env.SITE_NAME || 'SpawnpointAI' });
   }
 
   if (parts[0] === 'games' && parts.length === 1) {
@@ -564,7 +564,7 @@ async function serveGamePage(request, env, url) {
   const title = `${game.title} by ${game.creator}`;
   const desc = game.tagline || game.description.slice(0, 160) || `Play ${game.title} in your browser.`;
   const image = game.has_cover ? `${url.origin}/cover/${game.id}` : '';
-  const tags = `<title>${esc(title)} | ${esc(env.SITE_NAME || 'Spawnpoint')}</title>
+  const tags = `<title>${esc(title)} | ${esc(env.SITE_NAME || 'SpawnpointAI')}</title>
 <meta name="description" content="${esc(desc)}">
 <meta property="og:title" content="${esc(title)}">
 <meta property="og:description" content="${esc(desc)}">

@@ -1,8 +1,8 @@
-// Spawnpoint front end: a small single-page app with no build step.
+// SpawnpointAI front end: a small single-page app with no build step.
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const main = $('#main');
-let META = { genres: [], builders: [], maxGameMb: 50, siteName: 'Spawnpoint' };
+let META = { genres: [], builders: [], maxGameMb: 50, siteName: 'SpawnpointAI' };
 
 // ---------- small utilities ----------
 
