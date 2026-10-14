@@ -1,0 +1,32 @@
+{
+  "name": "spawnpoint",
+  "version": "0.1.0",
+  "description": "A store for AI-made browser games, running on Cloudflare Workers, D1 and R2.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.151.0"
+  },
+  "private": true,
+  "cloudflare": {
+    "bindings": {
+      "DB": {
+        "description": "Database for game listings, versions and ratings."
+      },
+      "FILES": {
+        "description": "Storage for uploaded game files and cover images."
+      },
+      "ADMIN_KEY": {
+        "description": "A long password you choose. It lets you remove any game as the site owner. Keep it private."
+      },
+      "NEW_GAMES_PER_DAY": {
+        "description": "How many new games one person can publish per day."
+      },
+      "MAX_GAME_MB": {
+        "description": "Largest game upload allowed, in MB."
+      }
+    }
+  }
+}

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Spawnpoint — play and publish games made with AI</title>
+<meta name="description" content="Play browser games made with AI tools, or publish yours and get real players trying it.">
+<meta name="theme-color" content="#2B44E8">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+  <div class="wrap head-row">
+    <a href="/" class="brand" data-link aria-label="Spawnpoint home">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 30 16 16 30 2 16Z" fill="var(--cobalt)"/><path d="M16 9 23 16 16 23 9 16Z" fill="var(--sun)"/></svg>
+      <span>spawnpoint</span>
+    </a>
+    <nav class="nav" aria-label="Main">
+      <a href="/" data-link data-nav="home">Browse</a>
+      <a href="/mine" data-link data-nav="mine">My games</a>
+      <a href="/publish" data-link data-nav="publish" class="btn btn-primary btn-sm"><span class="wide-only">Publish a game</span><span class="narrow-only">Publish</span></a>
+    </nav>
+  </div>
+</header>
+<main id="main" tabindex="-1"></main>
+<footer class="site-foot">
+  <div class="wrap foot-row">
+    <p>Every game runs in a sandbox, so it can't see your account or other games.</p>
+    <p>Free to play. Free to publish.</p>
+  </div>
+</footer>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script src="/vendor/fflate.js" defer></script>
+<script src="/app.js" type="module"></script>
+</body>
+</html>
