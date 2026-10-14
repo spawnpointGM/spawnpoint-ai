@@ -4,7 +4,7 @@ A store for browser games made with AI. Players find and play games instantly; c
 
 Runs entirely on Cloudflare's free tier: Workers (site and API), D1 (database) and R2 (game files, no bandwidth fees).
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/YOUR-USERNAME/spawnpoint-ai)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/spawnpointGM/spawnpoint-ai)
 
 ## Deploy it
 
