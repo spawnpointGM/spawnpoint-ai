@@ -15,6 +15,13 @@ export default {
     try {
       if (url.pathname.startsWith('/play/')) return await servePlayFile(request, env, url);
       if (url.pathname.startsWith('/cover/')) return await serveCover(env, url);
+      // Private testing mode: with SITE_PASSWORD set, the API and game pages need the password.
+      // Game files (/play) and covers stay open because their URLs use random IDs that only the API reveals.
+      if (url.pathname === '/api/gate' && request.method === 'POST') return await enterGate(request, env);
+      if (!(await passedGate(request, env))) {
+        if (url.pathname.startsWith('/api/')) return json({ error: 'This site is in private testing. Enter the password to continue.', gate: true }, 401);
+        if (url.pathname.startsWith('/game/')) return env.ASSETS.fetch(new Request(new URL('/', url), { headers: { accept: 'text/html' } }));
+      }
       await ensureSchema(env);
       if (url.pathname.startsWith('/api/')) return await handleApi(request, env, url, ctx);
       if (url.pathname.startsWith('/game/')) return await serveGamePage(request, env, url);
@@ -115,6 +122,27 @@ async function addMissingColumns(env, table, columns) {
   const have = new Set(results.map((r) => r.name));
   const missing = Object.entries(columns).filter(([name]) => !have.has(name));
   if (missing.length) await env.DB.batch(missing.map(([name, type]) => env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`)));
+}
+
+// ---------- private testing mode ----------
+
+async function gateToken(env) { return sha256('gate:' + env.SITE_PASSWORD); }
+
+async function passedGate(request, env) {
+  if (!env.SITE_PASSWORD) return true;
+  const m = (request.headers.get('cookie') || '').match(/(?:^|;\s*)sp_gate=([a-f0-9]{64})/);
+  return !!m && m[1] === (await gateToken(env));
+}
+
+async function enterGate(request, env) {
+  if (!env.SITE_PASSWORD) return json({ ok: true });
+  const body = await readJson(request);
+  if (String(body.password || '') !== env.SITE_PASSWORD) {
+    await new Promise((r) => setTimeout(r, 600)); // slows down guessing
+    fail(401, 'That password is wrong.');
+  }
+  const secure = new URL(request.url).protocol === 'https:' ? '; Secure' : '';
+  return json({ ok: true }, 200, { 'set-cookie': `sp_gate=${await gateToken(env)}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax${secure}` });
 }
 
 // ---------- R2 free-tier guard ----------

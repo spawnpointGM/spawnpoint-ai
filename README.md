@@ -17,6 +17,17 @@ If Cloudflare asks you to turn on R2 first, it may ask for a card. That's a veri
 
 After that, every change pushed to the GitHub copy redeploys the site automatically.
 
+## Private testing mode
+
+To test before going public, put the whole site behind a password:
+
+1. In the Cloudflare dashboard, open **Workers & Pages → spawnpoint-ai → Settings → Variables and Secrets**.
+2. Select **Add**, choose type **Secret**, name it `SITE_PASSWORD`, enter a password, and deploy.
+
+Visitors then see a password screen instead of the site. Share an invite link with testers so they get in with one tap: `https://YOUR-SITE/?invite=YOUR_PASSWORD`. Once signed in, a device stays in for 30 days.
+
+To go public, delete the `SITE_PASSWORD` secret. Use the **Secret** type, not plain text: plain-text variables added in the dashboard are erased the next time the site deploys.
+
 ## Publishing a game
 
 - **Upload:** a `.zip` of your game folder or a single `.html` file, up to 50 MB. The zip needs an `index.html` (or another `.html` start file you pick). Use relative paths for assets, like `img/player.png`, not `/img/player.png`.

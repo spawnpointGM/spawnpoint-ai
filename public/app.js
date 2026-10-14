@@ -50,8 +50,44 @@ async function api(path, { method = 'GET', body, headers = {}, raw: rawBody } = 
   try { res = await fetch('/api' + path, opts); }
   catch { throw new Error('Could not reach the server. Check your connection and try again.'); }
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && data.gate) { showGate(); throw new Error(data.error); }
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status}).`);
   return data;
+}
+
+// ---------- private testing password screen ----------
+
+let gateShown = false;
+function showGate(message = '') {
+  if (gateShown && !message) return;
+  gateShown = true;
+  document.body.classList.add('gated');
+  document.title = `${META.siteName} — private testing`;
+  main.innerHTML = html`
+    <div class="wrap gate">
+      <form class="gate-card" id="gate">
+        <h1>Private testing</h1>
+        <p>SpawnpointAI isn't open to the public yet. Enter the password to look around.</p>
+        <div class="field"><label for="gate-pw">Password</label><input id="gate-pw" type="password" autocomplete="current-password" required></div>
+        <button class="btn btn-primary" type="submit">Enter</button>
+        ${raw(message ? `<p class="error">${esc(message)}</p>` : '')}
+      </form>
+    </div>`;
+  $('#gate').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (await tryGate($('#gate-pw').value)) location.reload();
+  });
+  $('#gate-pw').focus();
+}
+
+async function tryGate(password) {
+  try {
+    const res = await fetch('/api/gate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }) });
+    if (res.ok) return true;
+    const data = await res.json().catch(() => ({}));
+    showGate(data.error || 'That password is wrong.');
+  } catch { showGate('Could not reach the server. Check your connection and try again.'); }
+  return false;
 }
 
 function toast(msg) {
@@ -105,6 +141,7 @@ const routes = [
 let cleanup = null;
 async function render() {
   if (cleanup) { cleanup(); cleanup = null; }
+  if (gateShown) return;
   const path = location.pathname;
   document.querySelectorAll('[data-nav]').forEach((a) => a.removeAttribute('aria-current'));
   const nav = path === '/' ? 'home' : path.split('/')[1];
@@ -1008,6 +1045,15 @@ async function viewAdmin() {
 // ---------- start ----------
 
 (async function boot() {
+  // Invite links (?invite=PASSWORD) sign testers in with one tap.
+  const params = new URLSearchParams(location.search);
+  const invite = params.get('invite');
+  if (invite) {
+    params.delete('invite');
+    history.replaceState({}, '', location.pathname + (params.toString() ? '?' + params : ''));
+    await tryGate(invite);
+    if (gateShown) return;
+  }
   try { META = { ...META, ...(await api('/meta')) }; } catch {}
   render();
 })();

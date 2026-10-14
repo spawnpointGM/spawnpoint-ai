@@ -235,6 +235,14 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--c
 .list-item h3 { font-size: 1.05rem; }
 .list-item p { color: var(--ink-3); font-size: .88rem; }
 
+/* ---------- private testing screen ---------- */
+body.gated .nav, body.gated .site-foot { display: none; }
+.gate { display: flex; justify-content: center; }
+.gate-card { width: 100%; max-width: 400px; margin: 9vh 0; background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 28px; }
+.gate-card h1 { font-size: 1.8rem; }
+.gate-card > p { color: var(--ink-2); margin: 8px 0 20px; }
+.gate-card .btn { width: 100%; }
+
 /* ---------- review & admin ---------- */
 .banner { display: flex; gap: 16px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; border-radius: 12px; padding: 14px 16px; margin-top: 20px; border: 1px solid #C9D0F7; background: var(--cobalt-tint); }
 .banner-bad { background: #FBEAEA; border-color: #EBC1C1; }
